@@ -28,3 +28,5 @@ exploitation challenge from Boston Key Party CTF 2015](https://github.com/ctfs/w
 * Specifically designed to work even with minimalistic shells such as busybox sh
 * Somewhat smart with regard to the terminal configuration used by the other
   side, such as newlines, echos etc.
+* Multiple concurrent connections, each bound to their own shell. On connection
+  close, processes are cleanup up properly
