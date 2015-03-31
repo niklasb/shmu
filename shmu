@@ -1,0 +1,4 @@
+#!/bin/bash
+cd "${0%/*}"
+[ -e target/*/*assembly*.jar ] || sbt assembly
+scala target/*/*assembly*.jar "$@"

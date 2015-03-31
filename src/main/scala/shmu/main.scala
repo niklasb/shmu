@@ -1,22 +1,25 @@
 package shmu
 
 object Main {
-  val defaultOpts = Map(
-    'port -> 9191,
-    'host -> "127.0.0.1",
-    'prompt -> "$ "
-  )
-
   val usage =
-      s"""|Usage: shmu -p PORT -h HOST cmd
-          |
-          |Defaults:
-          |  PORT ${defaultOpts('port)}
-          |  HOST ${defaultOpts('host)}""".stripMargin
+    s"""|Usage: shmu [options] cmd
+        |
+        | `cmd' is an arbitrary command that will yield a shell.
+        |
+        |Options:
+        |  -h/--host  STRING   The address to bind to (default: "${new Opts().host}")
+        |  -p/--port  INT      The port to listen on (default: ${new Opts().port})
+        |  --prompt   STRING   The prompt of the remote shell (default: "${new Opts().remotePrompt}")
+        |  --debug/-d          Enable debug tracing
+        """.stripMargin
 
   def usageAndExit() {
     System.err.println(usage)
     System.exit(2)
+  }
+
+  def enableDebug() {
+    System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug")
   }
 
   def main(args: Array[String]) {
@@ -26,6 +29,12 @@ object Main {
     var mCmd : Option[String] = None
     def parseOpts(rest : List[String]) {
       rest match {
+        case "--debug" :: xs =>
+          enableDebug()
+          parseOpts(xs)
+        case "-d" :: xs =>
+          enableDebug()
+          parseOpts(xs)
         case "--prompt" :: value :: xs =>
           opts.remotePrompt = value
           parseOpts(xs)

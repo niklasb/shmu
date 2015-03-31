@@ -9,9 +9,12 @@ import akka.pattern.ask
 import akka.util.{ ByteString, Timeout }
 import akka.util.Timeout
 import base64._
+import collection.JavaConversions
 import java.io._
 import java.net._
 import java.util.concurrent.TimeUnit
+import java.util.regex.Pattern
+import java.util.Scanner
 import org.slf4j._
 import scala.collection.mutable.ArrayBuffer
 import scala.io.Source
@@ -28,16 +31,40 @@ class Shmu(cmd: String, opts: Opts) {
   type StreamId = Int
   def encodeUtf8(s: String) = s.getBytes("UTF-8")
   def decodeUtf8(s: Array[Byte]) = new String(s, "UTF-8")
+  def repr(s: String): String = {
+    if (s == null) "null"
+    else s.toList.map {
+      case '\u0000' => "\\0"
+      case '\t' => "\\t"
+      case '\n' => "\\n"
+      case '\r' => "\\r"
+      case '\"' => "\\\""
+      case '\\' => "\\\\"
+      case ch if (' ' <= ch && ch <= '\u007e') => ch.toString
+      case ch => {
+        val hex = Integer.toHexString(ch.toInt)
+        "\\u%s%s".format("0" * (4 - hex.length), hex)
+      }
+    }.mkString("\"", "", "\"")
+  }
 
   val shellPayload = """PS='%s'; while true; do echo -n "$PS"; read cmd; eval "$cmd"; done"""
   val separator = "----"
 
+  def mkWriteFile(fname: String, content: String): String = {
+    var cmd = "mkdir -p /tmp; rm -f /tmp/b64\n"
+    for (part <- content.grouped(512)) {
+      val b64 = new String(base64.Encode(part))
+      cmd += """read part; echo "$part" >> /tmp/b64""" + "\n"
+      cmd += b64 + "\n"
+    }
+    cmd += "base64 -d < /tmp/b64 > " + fname + "\n"
+    cmd
+  }
+
   def mkShellMultiplexer(): String = {
     val source = Source.fromURL(getClass.getResource("/shmu.sh"))
-    val b64 = new String(base64.Encode(source.mkString))
-    "mkdir -p /tmp; " +
-    """read shmu; echo "$shmu" | base64 -d > /tmp/shmu.sh; """ +
-    "sh /tmp/shmu.sh\n" + b64 + "\n"
+    return mkWriteFile("/tmp/foo.sh", source.mkString) + "sh /tmp/foo.sh\n"
   }
 
   // muxer -> conn handler
@@ -58,7 +85,7 @@ class Shmu(cmd: String, opts: Opts) {
     var curIndex = 0
     var clients = Map[StreamId, ActorRef]()
     def send(cmd: Any*) {
-      val data = encodeUtf8(cmd.map(_.toString).mkString("", "\n", "\n"))
+      val data = encodeUtf8(cmd.map(_.toString).mkString("go ", "\ngo ", "\n"))
       logger.debug(s"Sending data ${ByteString(data)}")
       out.write(data)
       out.flush()
@@ -156,9 +183,9 @@ class Shmu(cmd: String, opts: Opts) {
 
   val logger = LoggerFactory.getLogger("Shmu")
 
-  def waitFor(out: InputStream, s: Array[Byte]) {
+  def waitFor(out: InputStream, f: ArrayBuffer[Byte] => Boolean) {
     var buf = ArrayBuffer[Byte]()
-    while (!buf.endsWith(s)) {
+    while (!f(buf)) {
       val nxt = out.read()
       if (nxt < 0)
         throw new Exception("Unexpected EOF")
@@ -168,17 +195,22 @@ class Shmu(cmd: String, opts: Opts) {
 
   def waitForPrompt(out: InputStream) {
     logger.info(s"Waiting for remote prompt '${opts.remotePrompt}'...")
-    waitFor(out, encodeUtf8(opts.remotePrompt))
+    waitFor(out, buf => buf.endsWith(encodeUtf8(opts.remotePrompt)))
   }
 
-  def waitForMultiplexer(out: InputStream) {
-    waitFor(out, encodeUtf8(separator + "\n"))
+  def waitForMultiplexer(out: InputStream) : Char = {
+    waitFor(out, buf => buf.endsWith(encodeUtf8(separator)))
+    val res = out.read()
+    assert(res >= 0)
+    res.toChar
   }
 
-  def inputLoop(lines: Iterator[String], muxer: ActorRef) {
+  def inputLoop(allLines: Iterator[String], muxer: ActorRef) {
+    // skip echos and echo-related empty lines
+    val lines = allLines.filter(line => line != "" && !line.startsWith("go "))
     while (lines.hasNext) {
       val cmd = lines.next()
-      logger.debug(s"Got new line from other side: $cmd")
+      logger.debug(s"Got new line from other side: ${repr(cmd)}")
       cmd match {
         case "data" =>
           val streamId = lines.next().toInt
@@ -206,16 +238,21 @@ class Shmu(cmd: String, opts: Opts) {
         val Some(in) = mIn
         in.write(encodeUtf8(mkShellMultiplexer))
         in.flush()
-        waitForMultiplexer(out)
+        logger.info("Waiting for multiplexer to come up")
+        val endline = waitForMultiplexer(out)
+        logger.debug(s"Endline character is " + endline.toInt)
         logger.info(s"Got it, starting TCP server on ${opts.host}:${opts.port}")
         implicit val system = ActorSystem("shmu-tcp")
         val muxer = system.actorOf(Muxer.props(in))
         val server = system.actorOf(Server.props(muxer))
-        inputLoop(scala.io.Source.fromInputStream(out).getLines(), muxer)
+        // for now, use generic tokenizer. would be better to figure out endline
+        // earlier and use it on our side as well
+        val lines = new Scanner(out).useDelimiter(Pattern.compile("""[\r\n]"""))
+        inputLoop(JavaConversions.asScalaIterator(lines), muxer)
       },
       err => {
         for (line <- scala.io.Source.fromInputStream(err).getLines)
-          logger.warn(s"Unexpected data from stderr: $line")
+          logger.info(s"Stderr data: $line")
       }
     ))
   }

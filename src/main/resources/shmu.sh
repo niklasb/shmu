@@ -12,6 +12,7 @@ if ! echo a >/dev/null 2>/tmp/null; then
   NULL=/tmp/null
   if ! ps fax | grep $$ | grep -v grep | grep /tmp/sh 2>$NULL; then
     # let's fake it, otherwise very weird stuff happens
+    echo Migrating...
     [ -e $SH ] || sed 's/\/dev\/null/\/tmp\/null/g' /bin/sh > $SH
     touch /tmp/null
     chmod +x $SH
@@ -107,23 +108,27 @@ loop1_pid=$!
 
 # loop 2: read from stdin, demultiplex, write to process
 while read ty; do
-  if [ "$ty" == "data" ]; then
+  if [ "$ty" == "go data" ]; then
     read target
+    target="`echo "$target"|tail -c +4`"
     dir=$WORK_DIR/$target
     read inp
+    inp="`echo "$inp"|tail -c +4`"
     #echo >&1 "Got payload for $dir"
     echo "$inp" | base64 -d >> $dir/in_file
-  elif [ "$ty" == "kill" ]; then
+  elif [ "$ty" == "go kill" ]; then
     read target
+    target="`echo "$target"|tail -c +4`"
     dir=$WORK_DIR/$target
     kill_first_child `cat $dir/ppid`
-  elif [ "$ty" == "exec" ]; then
+  elif [ "$ty" == "go exec" ]; then
     read cmd
+    cmd="`echo "$cmd"|tail -c +4`"
     top=`expr $top + 1`
     dir=`prepare $top "$cmd"`
     echo $top > $WORK_DIR/top
     run $dir "$cmd" &
-  elif [ "$ty" == "exit" ]; then
+  elif [ "$ty" == "go exit" ]; then
     break
   fi
 done
